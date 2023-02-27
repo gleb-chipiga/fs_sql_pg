@@ -1,3 +1,8 @@
+DROP TYPE IF EXISTS public.session_type;
+
+CREATE TYPE public.session_type AS ENUM
+    ('found', 'not_found', 'ym');
+
 WITH table_unnest AS (
 	SELECT
 		DISTINCT ON (v.visit_id, h.date, h.client_id, h.url)
@@ -239,56 +244,52 @@ find_double_ad_click_cases AS (
 		client_id
 )
 
- SELECT
-  *
-  FROM
-  (
-  SELECT
-  u.type,
-  u.date,
-  CASE WHEN gt.session_id IS NOT NULL THEN REPLACE(source,source,gt.source_a)
-  ELSE source END source,
-  CASE WHEN gt.session_id IS NOT NULL THEN REPLACE(medium,medium,gt.medium_a)
-  ELSE medium END medium,
-  CASE WHEN gt.session_id IS NOT NULL THEN REPLACE(u.campaign_name,u.campaign_name,null)
-  ELSE u.campaign_name END campaign_name,
-  CASE WHEN gt.session_id IS NOT NULL THEN REPLACE(u.ad_id,u.ad_id,null)
-  ELSE u.ad_id END ad_id,
-  CASE WHEN gt.session_id IS NOT NULL THEN gt.commission
-  ELSE u.avg_session_cost END avg_session_cost,
-  u.session_count,
-  u.session_id,
-  u.client_id,
-  IF(gt.session_id IS NOT NULL, 'adv_map',null) as map
-  FROM
-  (
-  SELECT
-    type,
-    PARSE_DATE('%Y%m%d',  date) AS date,
-    source,
-    medium,
-    campaign_name,
-    ad_id,
-    avg_session_cost,
-    session_count,
-    session_id,
-    client_id
-  FROM
-  find_double_ad_click_cases
-  UNION ALL
-  SELECT
-    'GA4_session_id' as type,
-    PARSE_DATE('%Y%m%d',  event_date) AS date,
-    traffic_source_GA4 as source,
-    traffic_medium_GA4 as medium,
-    traffic_name_GA4 as campaign_name,
-    utm_term as ad_id,
-    0 as avg_session_cost,
-    session_count,
-    session_id,
-    user_pseudo_id as client_id
-  FROM table_utm
-  WHERE is_paid_sessions = 'unpaid_sessions') u
-  LEFT JOIN `tui-segmentstream.ad_costs.adv_cake_sessions_orders` gt USING(session_id)
-  )
-
+SELECT *
+FROM
+(
+	SELECT
+		u.session_type,
+		u.date,
+		CASE WHEN gt.visit_id IS NOT NULL THEN gt.source_a ELSE source END source,
+		CASE WHEN gt.visit_id IS NOT NULL THEN gt.medium_a ELSE medium END medium,
+		CASE WHEN gt.visit_id IS NOT NULL THEN campaign_name ELSE null END campaign_name,
+		CASE WHEN gt.visit_id IS NOT NULL THEN ad_id ELSE null END ad_id,
+		CASE WHEN gt.visit_id IS NOT NULL THEN gt.commission ELSE u.avg_session_cost END avg_session_cost,
+		u.session_count,
+		u.session_id,
+		u.client_id,
+		CASE WHEN gt.visit_id IS NOT NULL THEN gt.source_a ELSE source END source,
+		CASE WHEN gt.visit_id IS NOT NULL THEN 'adv_map' ELSE null END map,
+	FROM
+	(
+		SELECT
+			session_type,
+			date,
+			ad_id,
+			cost_source,
+			visit_source,
+			medium,
+			campaign_name,
+			avg_session_cost,
+			visit_count,
+			visit_id,
+			client_id
+		FROM find_double_ad_click_cases
+		UNION ALL
+		SELECT
+			'ym'::session_type as session_type,
+			date,
+			utm_term as ad_id,
+			null as cost_source,
+			session_count as visit_source,
+			utm_mediaum as medium,
+			'' as campaign_name, -- traffic_name_GA4 as campaign_name,
+			0 as avg_session_cost,
+			visit_count,
+			visit_id,
+			user_pseudo_id as client_id
+		FROM table_utm_edit
+		-- WHERE is_paid_sessions = 'unpaid_sessions'
+	) u
+	LEFT JOIN `costs_advcake` ON u.visit_id = gt.session_id
+)
