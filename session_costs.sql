@@ -16,7 +16,7 @@ WITH table_unnest AS (
 		h.utm_campaign,
 		h.utm_content,
 		h.utm_term,
-		1 AS session_count
+		1 AS visit_count
 	FROM visits as v
 	JOIN hits as h ON h.client_id = v.client_id AND (h.watch_id = ANY (v.watch_ids))
 	ORDER BY v.visit_id, h.date, h.client_id, h.url, h.date_time
@@ -65,7 +65,7 @@ table_utm_edit as (
         url,
         client_id,
         visit_id,
-        session_count,
+        visit_count,
 		utm_source,
         utm_medium,
         utm_campaign,
@@ -85,7 +85,7 @@ table_utm_edit_final AS (
 		utm_campaign,
 		visit_id,
 		client_id,
-		session_count,
+		visit_count,
 		substring(utm_term, '^\d{7,11}$')::integer AS utm_term
 	FROM table_utm_edit
 ),
@@ -250,16 +250,15 @@ FROM
 	SELECT
 		u.session_type,
 		u.date,
-		CASE WHEN gt.visit_id IS NOT NULL THEN gt.source_a ELSE source END source,
-		CASE WHEN gt.visit_id IS NOT NULL THEN gt.medium_a ELSE medium END medium,
-		CASE WHEN gt.visit_id IS NOT NULL THEN campaign_name ELSE null END campaign_name,
-		CASE WHEN gt.visit_id IS NOT NULL THEN ad_id ELSE null END ad_id,
-		CASE WHEN gt.visit_id IS NOT NULL THEN gt.commission ELSE u.avg_session_cost END avg_session_cost,
-		u.session_count,
-		u.session_id,
+		CASE WHEN ca.session_id IS NOT NULL THEN ca.source_a ELSE visit_source END visit_source,
+		CASE WHEN ca.session_id IS NOT NULL THEN ca.medium_a ELSE medium END medium,
+		CASE WHEN ca.session_id IS NOT NULL THEN campaign_name ELSE null END campaign_name,
+		CASE WHEN ca.session_id IS NOT NULL THEN ad_id ELSE null END ad_id,
+		CASE WHEN ca.session_id IS NOT NULL THEN ca.commission ELSE u.avg_session_cost END avg_session_cost,
+		u.visit_count,
+		u.visit_id,
 		u.client_id,
-		CASE WHEN gt.visit_id IS NOT NULL THEN gt.source_a ELSE source END source,
-		CASE WHEN gt.visit_id IS NOT NULL THEN 'adv_map' ELSE null END map,
+		CASE WHEN ca.session_id IS NOT NULL THEN 'adv_map' ELSE null END map
 	FROM
 	(
 		SELECT
@@ -279,17 +278,17 @@ FROM
 		SELECT
 			'ym'::session_type as session_type,
 			date,
-			utm_term as ad_id,
+			utm_term::bigint as ad_id,
 			null as cost_source,
-			session_count as visit_source,
-			utm_mediaum as medium,
+			utm_source as visit_source,
+			tue.utm_medium as medium,
 			'' as campaign_name, -- traffic_name_GA4 as campaign_name,
 			0 as avg_session_cost,
 			visit_count,
 			visit_id,
-			user_pseudo_id as client_id
-		FROM table_utm_edit
-		-- WHERE is_paid_sessions = 'unpaid_sessions'
+			client_id
+		FROM table_utm_edit as tue
+		WHERE true -- WHERE is_paid_sessions = 'unpaid_sessions'
 	) u
-	LEFT JOIN `costs_advcake` ON u.visit_id = gt.session_id
-)
+	LEFT JOIN costs_advcake as ca ON u.visit_id = ca.session_id::bigint
+) as sc
