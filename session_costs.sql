@@ -5,21 +5,70 @@ CREATE TYPE public.session_type AS ENUM
 
 WITH table_unnest AS (
 	SELECT
-		DISTINCT ON (v.visit_id, h.date, h.client_id, h.url)
+		DISTINCT ON (v.visit_id, v.start_url, h.date, h.client_id, h.url)
 		v.visit_id,
+		v.start_url,
 		h.date,
 		h.date_time,
 		h.client_id,
-		h.url,
 		h.utm_source,
 		h.utm_medium,
 		h.utm_campaign,
 		h.utm_content,
 		h.utm_term,
 		1 AS visit_count
-	FROM visits as v
-	JOIN hits as h ON h.client_id = v.client_id AND (h.watch_id = ANY (v.watch_ids))
-	ORDER BY v.visit_id, h.date, h.client_id, h.url, h.date_time
+	FROM visits v
+	JOIN hits h ON h.client_id = v.client_id AND (h.watch_id = ANY (v.watch_ids))
+	WHERE h.date = '2023-02-05'
+	ORDER BY v.visit_id, v.start_url, h.date, h.client_id, h.url, h.date_time NULLS LAST
+),
+
+table_utm as (
+	SELECT
+		visit_id,
+		date,
+		date_time,
+		client_id,
+		utm_source,
+		utm_medium,
+		utm_campaign,
+		utm_content,
+		utm_term,
+		visit_count,
+		start_url LIKE '%utm_source=yandex%'
+			OR start_url LIKE '%utm_source=vk_pro%'
+			OR start_url LIKE '%utm_source=mt_pro%' AS is_paid
+	FROM table_unnest
+),
+
+table_utm_edit as (
+    SELECT
+        date,
+        client_id,
+        visit_id,
+        visit_count,
+		utm_source,
+        utm_medium,
+        utm_campaign,
+        utm_content,
+        CASE
+     	    WHEN utm_source = 'yandex' THEN utm_content
+          	ELSE utm_term
+        END AS utm_term
+    FROM table_utm
+),
+
+table_utm_edit_final AS (
+	SELECT
+		date,
+		utm_source,
+		utm_medium,
+		utm_campaign,
+		visit_id,
+		client_id,
+		visit_count,
+		substring(utm_term, '^\d{7,11}$')::numeric AS utm_term
+	FROM table_utm_edit
 ),
 
 cost_table AS (
@@ -35,6 +84,7 @@ cost_table AS (
 			'vk' AS source,
 			'paid' AS medium
 		FROM "costs_vk_20230205"
+		WHERE date = '2023-02-05'
 		GROUP BY date, ad_id, campaign_name
 		UNION
 		SELECT
@@ -45,6 +95,7 @@ cost_table AS (
 			'yandex_direct' AS source,
 			'paid' AS medium
 		FROM "costs_yandex_20230205"
+		WHERE date = '2023-02-05'
 		GROUP BY date, ad_id, campaign_name
 		UNION
 		SELECT
@@ -55,39 +106,9 @@ cost_table AS (
 			'MyTarget' AS source,
 			'paid' AS medium
 		FROM "costs_mytarget_20230205"
+		WHERE date = '2023-02-05'
 		GROUP BY date, ad_id, campaign_name
 	) AS ct
-),
-
-table_utm_edit as (
-    SELECT
-        date,
-        url,
-        client_id,
-        visit_id,
-        visit_count,
-		utm_source,
-        utm_medium,
-        utm_campaign,
-        utm_content,
-        CASE
-     	    WHEN utm_source = 'yandex' THEN utm_content
-          	ELSE utm_term
-        END AS utm_term
-    FROM table_unnest
-),
-
-table_utm_edit_final AS (
-	SELECT
-		date,
-		utm_source,
-		utm_medium,
-		utm_campaign,
-		visit_id,
-		client_id,
-		visit_count,
-		substring(utm_term, '^\d{7,11}$')::integer AS utm_term
-	FROM table_utm_edit
 ),
 
 cost_table_join_sessions AS (
@@ -173,7 +194,13 @@ found_or_notfound_source_JOIN_cost_table_join_sessions AS (
 		f.medium,
 		f.campaign_name,
 		f.cost,
-		round((f.cost / CASE WHEN f.visit_count = 0 THEN 1 ELSE f.visit_count END)::numeric, 2) AS avg_session_cost,
+		round(
+			(f.cost / CASE
+			 	WHEN f.visit_count = 0 THEN 1
+			 	ELSE f.visit_count END
+			)::numeric,
+			2
+		) AS avg_session_cost,
 		s.visit_count,
 		f.client_id
 	FROM found_or_notfound_source AS f
@@ -264,7 +291,7 @@ FROM
 		SELECT
 			session_type,
 			date,
-			ad_id,
+			ad_id::text,
 			cost_source,
 			visit_source,
 			medium,
@@ -276,19 +303,19 @@ FROM
 		FROM find_double_ad_click_cases
 		UNION ALL
 		SELECT
-			'ym'::session_type as session_type,
+			'ym'::session_type AS session_type,
 			date,
-			utm_term::bigint as ad_id,
-			null as cost_source,
-			utm_source as visit_source,
-			tue.utm_medium as medium,
-			'' as campaign_name, -- traffic_name_GA4 as campaign_name,
+			utm_term AS ad_id,
+			null AS cost_source,
+			utm_source AS visit_source,
+			tue.utm_medium AS medium,
+			utm_campaign as campaign_name, -- traffic_name_GA4 as campaign_name, (traffic_name_GA4)
 			0 as avg_session_cost,
 			visit_count,
 			visit_id,
 			client_id
-		FROM table_utm_edit as tue
-		WHERE true -- WHERE is_paid_sessions = 'unpaid_sessions'
+		FROM table_utm as tue
+		WHERE NOT tue.is_paid
 	) u
-	LEFT JOIN costs_advcake as ca ON u.visit_id = ca.session_id::bigint
+	LEFT JOIN costs_advcake as ca ON u.visit_id::text = ca.session_id
 ) as sc
